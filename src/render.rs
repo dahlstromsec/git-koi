@@ -140,7 +140,7 @@ fn fit_hover_loop(behavior: Behavior, koi_anatomy: &KoiAnatomy) -> HoverFit {
             }
             let drift_pixels = match swim_pose.course {
                 Course::Hover { drift_pixels, .. } => drift_pixels,
-                Course::Lap { .. } => [0.0; 2],
+                Course::Lap { .. } | Course::Infinity { .. } => [0.0; 2],
             };
             ([min_corner, max_corner], drift_pixels)
         })
@@ -780,6 +780,59 @@ fn build_spine(koi_anatomy: &KoiAnatomy, swim_pose: &SwimPose) -> Vec<CurvePoint
                 })
                 .collect()
         }
+        Course::Infinity { angle_radians } => {
+    const WIDTH: f64 = 60.0;
+    const HEIGHT: f64 = 42.0;
+    const SAMPLES: usize = 2048;
+
+    // Sample one complete figure-eight path.
+    let path: Vec<[f64; 2]> = (0..=SAMPLES)
+        .map(|i| {
+            let t = TAU * i as f64 / SAMPLES as f64;
+            [
+                WIDTH * t.sin(),
+                HEIGHT * (2.0 * t).sin(),
+            ]
+        })
+        .collect();
+
+    // Build cumulative distances along the curve.
+    let mut distances = vec![0.0];
+    for pair in path.windows(2) {
+        let dx = pair[1][0] - pair[0][0];
+        let dy = pair[1][1] - pair[0][1];
+        distances.push(distances.last().unwrap() + dx.hypot(dy));
+    }
+
+    let total_length = *distances.last().unwrap();
+    let head_distance =
+        angle_radians.rem_euclid(TAU) / TAU * total_length;
+
+    // Each body point follows one pixel behind the previous point.
+    (0..point_count)
+        .map(|point_index| {
+            let target = (head_distance - point_index as f64)
+                .rem_euclid(total_length);
+
+            let upper = distances.partition_point(|&d| d < target)
+                .clamp(1, distances.len() - 1);
+            let lower = upper - 1;
+
+            let fraction = (target - distances[lower])
+                / (distances[upper] - distances[lower]);
+
+            let position = [0, 1].map(|axis| {
+                path[lower][axis]
+                    + fraction * (path[upper][axis] - path[lower][axis])
+            });
+
+            CurvePoint {
+                position,
+                half_width_pixels: calculate_point_half_width(point_index),
+            }
+        })
+        .collect()
+}
     };
     let mut body_spine = Vec::with_capacity(point_count);
     for (point_index, center_point) in center_points.iter().enumerate() {
