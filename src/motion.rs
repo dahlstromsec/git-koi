@@ -424,8 +424,9 @@ impl LapStyle {
             .sin()
             .max(0.0);
         Drive {
-            course: Course::Lap {
+            course: Course::Infinity {
                 angle_radians: -PI / 2.0 + TAU * self.lap_count * covered_speed / total_speed,
+            },
             },
             depth: 0.0,
             wave_phase_radians,
