@@ -286,7 +286,7 @@ fn resting_hovers_a_little_deeper_and_deep_rest_lower_still() {
         assert!(
             collect_loop(behavior)
                 .iter()
-                .all(|pose| matches!(pose.course, Course::Lap { .. }) && pose.depth == 0.0)
+                .all(|pose| matches!(pose.course, Course::Infinity { .. }) && pose.depth == 0.0)
         );
     }
 }
@@ -433,7 +433,7 @@ fn collect_loop(behavior: Behavior) -> Vec<SwimPose> {
 
 fn read_lap_angle(pose: &SwimPose) -> f64 {
     match pose.course {
-        Course::Lap { angle_radians } => angle_radians,
+        Course::Lap { angle_radians } | Course::Infinity { angle_radians } => angle_radians,
         Course::Hover { .. } => 0.0,
     }
 }
@@ -445,7 +445,7 @@ fn read_hover(pose: &SwimPose) -> (f64, [f64; 2]) {
             heading_offset_radians,
             drift_pixels,
         } => (heading_offset_radians, drift_pixels),
-        Course::Lap { .. } => (0.0, [0.0; 2]),
+        Course::Lap { .. } | Course::Infinity { .. } => (0.0, [0.0; 2]),
     }
 }
 

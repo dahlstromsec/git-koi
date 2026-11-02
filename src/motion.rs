@@ -122,12 +122,12 @@ const DART_STYLE: LapStyle = LapStyle {
 /// Where the koi swims in a frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Course {
-
-    /// Swim along a continuous figure-eight path.
-Infinity {
-    /// Progress along the path, measured in radians.
-    angle_radians: f64,
-},
+    /// Swim along a horizontal figure eight, with the body following behind the head.
+    Infinity {
+        /// Arc-length progress: one full turn covers one complete figure eight.
+        /// This is not the trigonometric parameter of the underlying curve.
+        angle_radians: f64,
+    },
     /// Clockwise around the frame center. The head's angle is measured clockwise on
     /// screen from the right; loops start with the head at the top.
     Lap {
@@ -208,7 +208,7 @@ pub fn frame_count(behavior: Behavior) -> u32 {
 /// The pose for a frame of a behavior's loop; frame numbers wrap around the loop, so
 /// frame `frame_count(behavior)` is frame zero again.
 ///
-/// Cruising and darting swim clockwise laps driven by strokes, each a beat and a
+/// Cruising and darting swim figure eights driven by strokes, each a beat and a
 /// glide. The koi speeds up a little after each stroke and coasts through the glide;
 /// lap speeds are rescaled so the loop covers exactly its laps. Cruising side fins
 /// brake open on the glide; darting side fins tuck through each burst and spread

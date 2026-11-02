@@ -18,6 +18,7 @@
 //! streak mark strengths in [`crate::markings`]; poses in [`crate::motion`].
 
 use std::f64::consts::{PI, TAU};
+use std::sync::OnceLock;
 
 use crate::behavior::Behavior;
 use crate::coat::{KoiBody, KoiCoat, WHITE_RAMP};
@@ -70,9 +71,9 @@ pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFra
 
 /// Render one frame of a behavior's seamless loop, colored like `render_koi`, in the
 /// pose `motion::calculate_swim_pose` gives; frame numbers wrap around the loop of
-/// `motion::frame_count(behavior)` frames. Laps circle the frame center, and longer
-/// koi swim a tighter lap so every size fits. A hovering loop is framed once, centered
-/// on the koi's sweep, and its drift shrinks only as far as the largest koi need to
+/// `motion::frame_count(behavior)` frames. Swimming follows a horizontal figure eight
+/// around the frame center without scaling the fish. A hovering loop is framed once,
+/// centered on the koi's sweep, and its drift shrinks only as far as the largest koi need to
 /// stay inside. The view never follows the fins, so it never shakes. Under water the koi
 /// turns toward water blue and partly drops out, more with depth. Identical inputs
 /// produce identical pixels without I/O, clock reads, or input mutation.
@@ -726,7 +727,7 @@ fn smooth_step(fraction: f64) -> f64 {
 }
 
 /// The spine follows the pose's course: the still pose's fixed heading and gentle bend,
-/// turned by any heading offset, or a clockwise circle around the frame center.
+/// turned by any heading offset, or a sampled swimming path around the frame center.
 fn build_spine(koi_anatomy: &KoiAnatomy, swim_pose: &SwimPose) -> Vec<CurvePoint> {
     const HEADING_RADIANS: f64 = -0.08;
     const BEND_RADIANS: f64 = 0.35;
@@ -781,58 +782,17 @@ fn build_spine(koi_anatomy: &KoiAnatomy, swim_pose: &SwimPose) -> Vec<CurvePoint
                 .collect()
         }
         Course::Infinity { angle_radians } => {
-    const WIDTH: f64 = 60.0;
-    const HEIGHT: f64 = 42.0;
-    const SAMPLES: usize = 2048;
-
-    // Sample one complete figure-eight path.
-    let path: Vec<[f64; 2]> = (0..=SAMPLES)
-        .map(|i| {
-            let t = TAU * i as f64 / SAMPLES as f64;
-            [
-                WIDTH * t.sin(),
-                HEIGHT * (2.0 * t).sin(),
-            ]
-        })
-        .collect();
-
-    // Build cumulative distances along the curve.
-    let mut distances = vec![0.0];
-    for pair in path.windows(2) {
-        let dx = pair[1][0] - pair[0][0];
-        let dy = pair[1][1] - pair[0][1];
-        distances.push(distances.last().unwrap() + dx.hypot(dy));
-    }
-
-    let total_length = *distances.last().unwrap();
-    let head_distance =
-        angle_radians.rem_euclid(TAU) / TAU * total_length;
-
-    // Each body point follows one pixel behind the previous point.
-    (0..point_count)
-        .map(|point_index| {
-            let target = (head_distance - point_index as f64)
-                .rem_euclid(total_length);
-
-            let upper = distances.partition_point(|&d| d < target)
-                .clamp(1, distances.len() - 1);
-            let lower = upper - 1;
-
-            let fraction = (target - distances[lower])
-                / (distances[upper] - distances[lower]);
-
-            let position = [0, 1].map(|axis| {
-                path[lower][axis]
-                    + fraction * (path[upper][axis] - path[lower][axis])
-            });
-
-            CurvePoint {
-                position,
-                half_width_pixels: calculate_point_half_width(point_index),
-            }
-        })
-        .collect()
-}
+            let path = infinity_path();
+            let head_distance = angle_radians.rem_euclid(TAU) / TAU * path.length();
+            // The whole spine trails by physical arc distance, including through the
+            // crossing and the loop seam. Fins and waves use its local tangent as usual.
+            (0..point_count)
+                .map(|point_index| CurvePoint {
+                    position: path.position(head_distance - point_index as f64),
+                    half_width_pixels: calculate_point_half_width(point_index),
+                })
+                .collect()
+        }
     };
     let mut body_spine = Vec::with_capacity(point_count);
     for (point_index, center_point) in center_points.iter().enumerate() {
@@ -1017,6 +977,81 @@ fn calculate_whisker_length(koi_anatomy: &KoiAnatomy) -> u32 {
     (koi_anatomy.body_length_pixels / BODY_PIXELS_PER_WHISKER_PIXEL)
         .round()
         .clamp(3.0, 5.0) as u32
+}
+
+/// Gerono's lemniscate, x = a sin(t), y = b sin(2t). Its tangent never
+/// vanishes, including at the crossing. Only the course changes; anatomy is unscaled.
+struct InfinityPath {
+    distances: Vec<f64>,
+}
+
+impl InfinityPath {
+    const HALF_WIDTH: f64 = 60.0;
+    const HALF_HEIGHT: f64 = 42.0;
+    const SAMPLES: usize = 4096;
+
+    fn point(parameter: f64) -> [f64; 2] {
+        [
+            Self::HALF_WIDTH * parameter.sin(),
+            Self::HALF_HEIGHT * (2.0 * parameter).sin(),
+        ]
+    }
+
+    fn new() -> Self {
+        let mut distances = Vec::with_capacity(Self::SAMPLES + 1);
+        distances.push(0.0);
+        let parameter_step = TAU / Self::SAMPLES as f64;
+        for index in 1..=Self::SAMPLES {
+            let start = parameter_step * (index - 1) as f64;
+            let end = parameter_step * index as f64;
+            // Integrate analytic speed instead of chord lengths so distances and
+            // the inverse's endpoint derivatives describe the same smooth curve.
+            let interval = parameter_step / 6.0
+                * (Self::speed(start) + 4.0 * Self::speed((start + end) / 2.0) + Self::speed(end));
+            distances.push(distances[index - 1] + interval);
+        }
+        Self { distances }
+    }
+
+    fn speed(parameter: f64) -> f64 {
+        (Self::HALF_WIDTH * parameter.cos())
+            .hypot(2.0 * Self::HALF_HEIGHT * (2.0 * parameter).cos())
+    }
+
+    fn length(&self) -> f64 {
+        self.distances[Self::SAMPLES]
+    }
+
+    fn position(&self, distance: f64) -> [f64; 2] {
+        let target = distance.rem_euclid(self.length());
+        // Floating-point rem_euclid may round a tiny negative distance up to length.
+        let upper = self
+            .distances
+            .partition_point(|&value| value <= target)
+            .clamp(1, Self::SAMPLES);
+        let lower = upper - 1;
+        let fraction =
+            (target - self.distances[lower]) / (self.distances[upper] - self.distances[lower]);
+        // Hermite inversion matches dt/ds at both ends of every table interval,
+        // keeping speed and heading continuous even at table boundaries and the seam.
+        let parameter_step = TAU / Self::SAMPLES as f64;
+        let start = parameter_step * lower as f64;
+        let end = start + parameter_step;
+        let interval = self.distances[upper] - self.distances[lower];
+        let squared = fraction * fraction;
+        let cubed = squared * fraction;
+        let parameter = start
+            + parameter_step * (3.0 * squared - 2.0 * cubed)
+            + interval
+                * ((cubed - 2.0 * squared + fraction) / Self::speed(start)
+                    + (cubed - squared) / Self::speed(end));
+        Self::point(parameter)
+    }
+}
+
+fn infinity_path() -> &'static InfinityPath {
+    static PATH: OnceLock<InfinityPath> = OnceLock::new();
+    PATH.get_or_init(InfinityPath::new)
 }
 
 /// The lap circle's radius: as wide as the frame allows, tighter for longer koi so the
@@ -1305,6 +1340,149 @@ fn calculate_dither_threshold(pixel_position: [u32; 2]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn infinity_has_uniform_arc_speed_and_smooth_periodic_tangents() {
+        let path = infinity_path();
+        let step = path.length() / 8192.0;
+        let direction = |distance: f64| {
+            let before = path.position(distance - step);
+            let after = path.position(distance + step);
+            let length = (after[0] - before[0]).hypot(after[1] - before[1]);
+            [
+                (after[0] - before[0]) / length,
+                (after[1] - before[1]) / length,
+            ]
+        };
+        for index in 0..8192 {
+            let distance = index as f64 * step;
+            let point = path.position(distance);
+            let next = path.position(distance + step);
+            let speed = (next[0] - point[0]).hypot(next[1] - point[1]) / step;
+            assert!((speed - 1.0).abs() < 0.00001, "speed {speed}");
+            let tangent = direction(distance);
+            let next_tangent = direction(distance + step);
+            assert!(tangent[0] * next_tangent[0] + tangent[1] * next_tangent[1] > 0.9999);
+            let wrapped = path.position(distance - path.length());
+            assert!((point[0] - wrapped[0]).hypot(point[1] - wrapped[1]) < 1e-10);
+        }
+        // The two passages through the center have different, well-defined headings.
+        for distance in [0.0, path.length() / 2.0] {
+            let point = path.position(distance);
+            assert!(point[0].hypot(point[1]) < 1e-10);
+        }
+        let just_before_seam = path.position(-f64::EPSILON);
+        assert!(just_before_seam[0].hypot(just_before_seam[1]) < 1e-10);
+        assert!(direction(0.0)[0] > 0.0);
+        assert!(direction(path.length() / 2.0)[0] < 0.0);
+    }
+
+    #[test]
+    fn infinity_spine_trails_along_the_curve_at_unchanged_body_length() {
+        let anatomy = calculate_anatomy(12_750);
+        let path = infinity_path();
+        for angle in [0.0, PI / 2.0, PI, 3.0 * PI / 2.0, TAU] {
+            let pose = SwimPose {
+                course: Course::Infinity {
+                    angle_radians: angle,
+                },
+                wave_strength: 0.0,
+                ..STILL_POSE
+            };
+            let spine = build_spine(&anatomy, &pose);
+            for (index, point) in spine.iter().enumerate() {
+                let expected = path.position(angle / TAU * path.length() - index as f64);
+                assert!(
+                    (point.position[0] - expected[0]).hypot(point.position[1] - expected[1])
+                        < 1e-10
+                );
+            }
+            let length: f64 = spine
+                .windows(2)
+                .map(|pair| {
+                    (pair[1].position[0] - pair[0].position[0])
+                        .hypot(pair[1].position[1] - pair[0].position[1])
+                })
+                .sum();
+            assert!((length - (spine.len() - 1) as f64).abs() < 0.02);
+        }
+    }
+
+    #[test]
+    fn swimming_headings_follow_motion_through_both_loops_and_the_seam() {
+        let anatomy = calculate_anatomy(100_000);
+        let path = infinity_path();
+        for behavior in [Behavior::Cruise, Behavior::Dart] {
+            for frame in 0..frame_count(behavior) {
+                let pose = calculate_swim_pose(behavior, frame);
+                let spine = build_spine(&anatomy, &pose);
+                let next_spine = build_spine(&anatomy, &calculate_swim_pose(behavior, frame + 1));
+                let heading = calculate_forward_direction(&spine, 0);
+                let Course::Infinity { angle_radians } = pose.course else {
+                    panic!("swimming must use the infinity course");
+                };
+                let distance_along = angle_radians / TAU * path.length();
+                let before = path.position(distance_along - 0.01);
+                let after = path.position(distance_along + 0.01);
+                let tangent = [0, 1].map(|axis| after[axis] - before[axis]);
+                let tangent_length = tangent[0].hypot(tangent[1]);
+                assert!(
+                    (heading[0] * tangent[0] + heading[1] * tangent[1]) / tangent_length > 0.99,
+                    "{behavior:?} frame {frame} faces away from its path"
+                );
+                let movement =
+                    [0, 1].map(|axis| next_spine[0].position[axis] - spine[0].position[axis]);
+                let distance = movement[0].hypot(movement[1]);
+                let alignment = (heading[0] * movement[0] + heading[1] * movement[1]) / distance;
+                // A dart travels a substantial arc per frame. Its displacement
+                // cuts across the turn, but must always stay in front of the head.
+                assert!(alignment > 0.0, "{behavior:?} frame {frame}: {alignment}");
+            }
+        }
+    }
+
+    #[test]
+    fn circular_course_still_follows_its_original_radius() {
+        let anatomy = calculate_anatomy(12_750);
+        let radius = calculate_lap_radius(anatomy.body_length_pixels);
+        let pose = SwimPose {
+            course: Course::Lap { angle_radians: 0.0 },
+            wave_strength: 0.0,
+            ..STILL_POSE
+        };
+        for point in build_spine(&anatomy, &pose) {
+            assert!((point.position[0].hypot(point.position[1]) - radius).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn infinity_keeps_unclipped_geometry_inside_canvas_for_every_frame_and_size() {
+        // Check geometry before rasterization: clipped pixels cannot hide a failure.
+        for total in [
+            0, 500, 1_500, 5_000, 12_750, 25_000, 50_000, 75_000, 100_000,
+        ] {
+            let anatomy = calculate_anatomy(total);
+            for behavior in [Behavior::Cruise, Behavior::Dart] {
+                for frame in 0..frame_count(behavior) {
+                    let pose = calculate_swim_pose(behavior, frame);
+                    let spine = build_spine(&anatomy, &pose);
+                    let fins = build_fins(&spine, &anatomy, &pose);
+                    let bounds = measure_curve_bounds(&spine, &fins);
+                    for axis in 0..2 {
+                        assert!(
+                            bounds[0][axis] > -125.5 && bounds[1][axis] < 125.5,
+                            "{total} {behavior:?} frame {frame}: {bounds:?}"
+                        );
+                    }
+                    for whisker in
+                        calculate_whisker_points(&spine, &anatomy, pose.whisker_sway_radians)
+                    {
+                        assert!(whisker.iter().all(|coordinate| coordinate.abs() < 125.5));
+                    }
+                }
+            }
+        }
+    }
 
     /// Paint only the mouth on an empty canvas centered on it.
     fn paint_mouth_alone(koi_body: KoiBody, mouth_opening: f64) -> Vec<[u8; 4]> {
