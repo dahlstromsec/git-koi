@@ -122,6 +122,12 @@ const DART_STYLE: LapStyle = LapStyle {
 /// Where the koi swims in a frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Course {
+
+    /// Swim along a continuous figure-eight path.
+Infinity {
+    /// Progress along the path, measured in radians.
+    angle_radians: f64,
+},
     /// Clockwise around the frame center. The head's angle is measured clockwise on
     /// screen from the right; loops start with the head at the top.
     Lap {
