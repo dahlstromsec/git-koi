@@ -85,7 +85,7 @@ pub fn render_swim_frame(
     let koi_anatomy = calculate_anatomy(koi_development.total_contributions);
     let swim_pose = calculate_swim_pose(behavior, frame_index);
     let pose_center = match swim_pose.course {
-        Course::Lap { .. } => [0.0, 0.0],
+        Course::Lap { .. } | Course::Infinity { .. } => [0.0, 0.0],
         Course::Hover { drift_pixels, .. } => {
             let hover_fit = fit_hover_loop(behavior, &koi_anatomy);
             [0, 1].map(|axis_index| {
