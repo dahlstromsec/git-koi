@@ -427,7 +427,6 @@ impl LapStyle {
             course: Course::Infinity {
                 angle_radians: -PI / 2.0 + TAU * self.lap_count * covered_speed / total_speed,
             },
-            },
             depth: 0.0,
             wave_phase_radians,
             wave_strength: self.glide_wave_strength + self.stroke_wave_gain * stroke,
